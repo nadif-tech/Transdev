@@ -3,7 +3,13 @@ ultralytics==8.0.0
 opencv-python-headless==4.8.1.78
 numpy==1.24.3
 Pillow==10.0.0
-streamlit-webrtc==0.47.1
-av==10.0.0
 torch==2.0.0
 torchvision==0.15.0
+matplotlib==3.7.1
+pandas==2.0.0
+seaborn==0.12.2
+pyyaml==6.0
+tqdm==4.65.0
+psutil==5.9.5
+py-cpuinfo==9.0.0
+thop==0.1.1
