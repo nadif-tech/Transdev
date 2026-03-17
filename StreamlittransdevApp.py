@@ -69,9 +69,9 @@ if image_to_process is not None:
             # Affichage
             col1, col2 = st.columns(2)
             with col1:
-                st.image(rgb_img, caption=f"Image originale ({source})", use_columnwidth=True)
+                st.image(rgb_img, caption=f"Image originale ({source})", use_column_width=True)
             with col2:
-                st.image(annotated_img, channels="BGR", caption="Avec détections YOLO", use_columnwidth=True)
+                st.image(annotated_img, channels="BGR", caption="Avec détections YOLO", use_column_width=True)
             
             # Statistiques
             st.subheader("📊 Résultats de la détection")
@@ -117,9 +117,9 @@ if image_to_process is not None:
             # Affichage
             col1, col2 = st.columns(2)
             with col1:
-                st.image(rgb_img, caption=f"Image originale ({source})", use_columnwidth=True)
+                st.image(rgb_img, caption=f"Image originale ({source})", use_column_width=True)
             with col2:
-                st.image(img_with_faces, channels="BGR", caption="Détection de visages", use_columnwidth=True)
+                st.image(img_with_faces, channels="BGR", caption="Détection de visages", use_column_width=True)
             
             # Statistiques
             st.subheader("📊 Résultats")
