@@ -138,23 +138,26 @@ else:
 
 # Instructions et informations sur les dépendances
 with st.expander("ℹ️ Informations et dépannage"):
+    st.markdown("### 📋 Instructions")
     st.markdown("""
-    ### 📋 Instructions
-    
     1. **Pour utiliser la caméra**:
-       - Cliquez sur "Prenez une photo"
+       - Cliquez sur \"Prenez une photo\"
        - Autorisez l'accès à la caméra
        - La photo sera automatiquement analysée
+    """)
     
+    st.markdown("""
     2. **Pour uploader une image**:
-       - Cliquez sur "Browse files" dans la section upload
+       - Cliquez sur \"Browse files\" dans la section upload
        - Sélectionnez une image depuis votre ordinateur
+    """)
     
-    ### 🔧 Mode de détection actuel
+    st.markdown("### 🔧 Mode de détection actuel")
+    if model_available:
+        st.markdown("- **Mode actuel**: YOLO (détection complète)")
+    else:
+        st.markdown("- **Mode actuel**: Visages OpenCV (mode dégradé)")
     
-    - **Si YOLO est installé**: Détection complète de tous les objets
-    - **Si YOLO n'est pas installé**: Détection des visages avec OpenCV
-    
-    ### 📦 Dépendances requises
-    
+    st.markdown("### 📦 Dépendances requises")
+    st.markdown("""
     Pour activer YOLO, votre fichier `requirements.txt` doit contenir:
