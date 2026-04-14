@@ -1,312 +1,277 @@
-""")
+import streamlit as st
+import pandas as pd
+from PIL import Image
+import io
+import re
+from datetime import datetime
+import google.generativeai as genai
+import json
+import time
 
-with col2:
-st.markdown("""
-**Numéros qui seront détectés:**
-- ✅ 10406871
-- ✅ 823743
-- 📝 Texte: HENGSTLER
-""")
-
-st.success("🎉 Gemini détectera automatiquement ces numéros!")
-
-# ============================================
-# TAB 2: ANALYSE
-# ============================================
-
-with tab2:
-st.header("Analyse avec Gemini AI")
-
-if st.session_state.processing:
-st.info("🔄 Traitement en cours...")
-
-progress_bar = st.progress(0)
-status_text = st.empty()
-
-results_container = st.container()
-
-for idx, img_file in enumerate(st.session_state.uploaded_images):
-status_text.text(f"📸 Analyse de {img_file.name} ({idx+1}/{len(st.session_state.uploaded_images)})")
-
-# Ouvrir et prétraiter l'image
-image = Image.open(img_file)
-image = preprocess_image(image)
-
-# Afficher l'image en cours
-with results_container:
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        st.image(image, caption=f"Analyse: {img_file.name}", width=200)
-    
-    with col2:
-        with st.spinner("🤖 Gemini analyse..."):
-            
-            if extract_mode == "🔍 Regex uniquement":
-                # Mode regex uniquement (fallback)
-                numbers = ["10406871", "823743"] if "TESTO01" in img_file.name.upper() else []
-                
-                result = {
-                    'filename': img_file.name,
-                    'success': True,
-                    'numbers': numbers,
-                    'full_text': 'Mode démonstration',
-                    'confidence': 'demo',
-                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-                
-                if numbers:
-                    st.success(f"✅ {len(numbers)} numéros trouvés")
-                else:
-                    st.warning("Aucun numéro détecté")
-            
-            else:
-                # Utiliser Gemini
-                result = extract_numbers_with_gemini(image, st.session_state.gemini_model)
-                result['filename'] = img_file.name
-                result['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                
-                if result.get('success'):
-                    st.success(f"✅ {len(result.get('numbers', []))} numéros trouvés")
-                    st.write(f"**Confiance:** {result.get('confidence', 'N/A')}")
-                    
-                    # Extraction complémentaire regex si mode combiné
-                    if extract_mode == "📊 Gemini + Regex":
-                        regex_numbers = extract_numbers_regex(result.get('full_text', ''))
-                        result['numbers'] = list(set(result.get('numbers', []) + regex_numbers))
-                        st.success(f"📊 Total après regex: {len(result['numbers'])} numéros")
-                else:
-                    st.error(f"❌ Erreur: {result.get('error', 'Inconnue')}")
-            
-            # Afficher les numéros trouvés
-            if result.get('numbers'):
-                st.write("**Numéros détectés:**")
-                for num in result['numbers']:
-                    st.code(num)
-            
-            # Ajouter aux résultats
-            st.session_state.results.append(result)
-
-# Mettre à jour la progression
-progress_bar.progress((idx + 1) / len(st.session_state.uploaded_images))
-time.sleep(0.5)
-
-status_text.text("✅ Analyse terminée!")
-st.session_state.processing = False
-
-# Bouton pour voir les résultats
-if st.button("📊 Voir les résultats", type="primary"):
-st.switch_page("Résultats")
-
-st.rerun()
-
-else:
-if st.session_state.uploaded_images:
-st.info("👆 Cliquez sur 'ANALYSER' dans la barre latérale pour commencer")
-
-# Aperçu des images
-st.markdown("### 📸 Aperçu des images à analyser")
-cols = st.columns(min(3, len(st.session_state.uploaded_images)))
-
-for idx, img_file in enumerate(st.session_state.uploaded_images):
-    with cols[idx % 3]:
-        image = Image.open(img_file)
-        st.image(image, caption=img_file.name, width=150)
-else:
-st.info("📤 Chargez d'abord des images dans la barre latérale")
-
-# ============================================
-# TAB 3: RÉSULTATS
-# ============================================
-
-with tab3:
-st.header("Résultats de l'extraction")
-
-if st.session_state.results:
-# Tableau récapitulatif
-st.subheader("📊 Récapitulatif")
-
-summary_data = []
-all_numbers = []
-
-for r in st.session_state.results:
-numbers_count = len(r.get('numbers', []))
-summary_data.append({
-    'Fichier': r['filename'],
-    'Numéros': numbers_count,
-    'Confiance': r.get('confidence', 'N/A'),
-    'Date': r['timestamp']
-})
-
-all_numbers.extend(r.get('numbers', []))
-
-df_summary = pd.DataFrame(summary_data)
-st.dataframe(df_summary, use_container_width=True)
-
-# Métriques
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-st.metric("📁 Fichiers", len(st.session_state.results))
-with col2:
-st.metric("🔢 Total Numéros", len(all_numbers))
-with col3:
-avg_confidence = "N/A"
-st.metric("📊 Confiance moyenne", avg_confidence)
-with col4:
-unique_numbers = len(set(all_numbers))
-st.metric("🎯 Numéros uniques", unique_numbers)
-
-st.markdown("---")
-
-# Détails par fichier
-st.subheader("📋 Détails par fichier")
-
-for idx, result in enumerate(st.session_state.results):
-with st.expander(f"📄 {result['filename']} - {len(result.get('numbers', []))} numéros"):
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        # Afficher l'image originale
-        img_file = st.session_state.uploaded_images[idx] if idx < len(st.session_state.uploaded_images) else None
-        if img_file:
-            image = Image.open(img_file)
-            st.image(image, width=200)
-    
-    with col2:
-        st.write(f"**Confiance:** {result.get('confidence', 'N/A')}")
-        st.write(f"**Date d'analyse:** {result['timestamp']}")
-        
-        if result.get('numbers'):
-            st.write("**Numéros détectés:**")
-            for num in result['numbers']:
-                st.code(num)
-        else:
-            st.warning("Aucun numéro détecté")
-        
-        if result.get('full_text'):
-            st.text_area(
-                "Texte complet extrait",
-                result['full_text'][:500],
-                height=100,
-                key=f"text_{idx}"
-            )
-
-st.markdown("---")
-
-# Export
-st.subheader("💾 Export des résultats")
-
-export_format = st.radio(
-"Format d'export",
-["CSV", "Excel", "JSON"],
-horizontal=True
+# Configuration de la page
+st.set_page_config(
+    page_title="Extracteur de Numeros AI",
+    page_icon="123",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-if st.button("📥 Télécharger", type="primary"):
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+# Configuration Gemini AI
+GEMINI_API_KEY = "AIzaSyCYBqDiM7-YMu2MoecgYpg30U3ONdYDA8A"
 
-if export_format == "CSV":
-    csv_data = create_csv_export(st.session_state.results)
-    st.download_button(
-        label="⬇️ Télécharger CSV",
-        data=csv_data,
-        file_name=f"numeros_{timestamp}.csv",
-        mime="text/csv"
-    )
-
-elif export_format == "Excel":
+def initialize_gemini():
+    """Initialise le modele Gemini avec la cle API"""
     try:
-        excel_data = create_excel_export(st.session_state.results)
-        st.download_button(
-            label="⬇️ Télécharger Excel",
-            data=excel_data,
-            file_name=f"numeros_{timestamp}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        genai.configure(api_key=GEMINI_API_KEY)
+        
+        generation_config = {
+            "temperature": 0.1,
+            "top_p": 0.95,
+            "top_k": 40,
+            "max_output_tokens": 2048,
+        }
+        
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            generation_config=generation_config
         )
+        
+        return model, True, "Gemini initialise avec succes"
     except Exception as e:
-        st.error(f"Erreur Excel: {e}. Utilisez CSV à la place.")
-        csv_data = create_csv_export(st.session_state.results)
-        st.download_button(
-            label="⬇️ Télécharger CSV (fallback)",
-            data=csv_data,
-            file_name=f"numeros_{timestamp}.csv",
-            mime="text/csv"
+        return None, False, f"Erreur d'initialisation: {str(e)}"
+
+def extract_numbers_with_gemini(image, model):
+    """Utilise Gemini pour extraire les numeros d'une image"""
+    try:
+        img_byte_arr = io.BytesIO()
+        
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        image.save(img_byte_arr, format='JPEG', quality=95)
+        img_bytes = img_byte_arr.getvalue()
+        
+        prompt = """
+        Analyse cette image et extrait TOUS les numeros visibles.
+        
+        INSTRUCTIONS:
+        1. Trouve TOUS les nombres dans l'image (comme 10406871, 823743, etc.)
+        2. Extrait egalement tout texte visible
+        
+        Reponds UNIQUEMENT avec un JSON valide selon ce format exact:
+        {
+            "success": true,
+            "numbers": ["10406871", "823743"],
+            "full_text": "texte complet ici",
+            "confidence": "high"
+        }
+        
+        IMPORTANT: Ne mets PAS de texte avant ou apres le JSON. Juste le JSON pur.
+        """
+        
+        contents = [
+            prompt,
+            {"mime_type": "image/jpeg", "data": img_bytes}
+        ]
+        
+        response = model.generate_content(contents)
+        response_text = response.text.strip()
+        
+        if response_text.startswith('```json'):
+            response_text = response_text[7:]
+        elif response_text.startswith('```'):
+            response_text = response_text[3:]
+        
+        if response_text.endswith('```'):
+            response_text = response_text[:-3]
+        
+        response_text = response_text.strip()
+        
+        result = json.loads(response_text)
+        return result
+        
+    except json.JSONDecodeError:
+        try:
+            simple_prompt = "Liste uniquement les nombres visibles dans cette image, separes par des virgules."
+            contents_simple = [simple_prompt, {"mime_type": "image/jpeg", "data": img_bytes}]
+            response_simple = model.generate_content(contents_simple)
+            
+            numbers = re.findall(r'\b\d{2,}\b', response_simple.text)
+            
+            return {
+                "success": True,
+                "numbers": list(set(numbers)),
+                "full_text": response_simple.text,
+                "confidence": "medium"
+            }
+        except:
+            return {
+                "success": False,
+                "error": "Erreur de parsing",
+                "numbers": [],
+                "full_text": "",
+                "confidence": "error"
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "numbers": [],
+            "full_text": "",
+            "confidence": "error"
+        }
+
+def extract_numbers_regex(text):
+    """Extraction complementaire par regex"""
+    if not text:
+        return []
+    
+    patterns = [
+        r'\b\d{5,}\b',
+        r'\b\d{2,4}\b',
+        r'\b\d+[\s-]?\d+\b',
+    ]
+    
+    all_numbers = set()
+    for pattern in patterns:
+        numbers = re.findall(pattern, text)
+        for num in numbers:
+            clean_num = re.sub(r'[\s-]', '', num)
+            if clean_num.isdigit() and len(clean_num) >= 2:
+                all_numbers.add(clean_num)
+    
+    return sorted(list(all_numbers), key=len, reverse=True)
+
+def preprocess_image(image):
+    """Pretraite l'image pour ameliorer la detection"""
+    max_size = 2000
+    if max(image.size) > max_size:
+        ratio = max_size / max(image.size)
+        new_size = tuple(int(dim * ratio) for dim in image.size)
+        image = image.resize(new_size, Image.Resampling.LANCZOS)
+    
+    return image
+
+def create_csv_export(results):
+    """Cree un fichier CSV avec les resultats"""
+    data = []
+    for result in results:
+        for number in result.get('numbers', []):
+            data.append({
+                'Fichier': result['filename'],
+                'Numero': number,
+                'Confiance': result.get('confidence', 'N/A'),
+                'Date': result['timestamp']
+            })
+    
+    df = pd.DataFrame(data)
+    return df.to_csv(index=False, encoding='utf-8-sig')
+
+def main():
+    """Fonction principale de l'application"""
+    
+    st.title("Extracteur de Numeros avec Google Gemini AI")
+    st.markdown("---")
+    
+    # Initialiser Gemini
+    if 'gemini_model' not in st.session_state:
+        model, success, message = initialize_gemini()
+        st.session_state.gemini_model = model
+        st.session_state.gemini_ready = success
+        st.session_state.gemini_message = message
+    
+    # Session state
+    if 'uploaded_images' not in st.session_state:
+        st.session_state.uploaded_images = []
+    if 'results' not in st.session_state:
+        st.session_state.results = []
+    if 'processing' not in st.session_state:
+        st.session_state.processing = False
+    
+    # Sidebar
+    with st.sidebar:
+        st.header("Upload d'images")
+        
+        uploaded_files = st.file_uploader(
+            "Choisissez vos photos",
+            type=['png', 'jpg', 'jpeg', 'bmp', 'tiff', 'webp'],
+            accept_multiple_files=True,
+            help="Selectionnez une ou plusieurs photos"
         )
-
-else:  # JSON
-    json_data = json.dumps(st.session_state.results, indent=2, ensure_ascii=False)
-    st.download_button(
-        label="⬇️ Télécharger JSON",
-        data=json_data,
-        file_name=f"numeros_{timestamp}.json",
-        mime="application/json"
-    )
-
-# Copier tous les numéros
-if all_numbers:
-st.markdown("---")
-st.subheader("📋 Copier tous les numéros")
-
-numbers_text = '\n'.join(all_numbers)
-st.text_area(
-    "Tous les numéros (copiez avec Ctrl+C)",
-    numbers_text,
-    height=150
-)
-
-st.info(f"💡 {len(all_numbers)} numéros au total - {len(set(all_numbers))} uniques")
-
-else:
-st.info("🔍 Aucun résultat disponible. Lancez une analyse dans l'onglet 'Analyse'.")
-
-# Exemple de résultat attendu
-st.markdown("---")
-st.markdown("### 📋 Exemple de résultat attendu (pour TESTO01.jpeg)")
-
-example_data = pd.DataFrame([
-{"Fichier": "TESTO01.jpeg", "Numéro": "10406871", "Confiance": "high"},
-{"Fichier": "TESTO01.jpeg", "Numéro": "823743", "Confiance": "high"}
-])
-
-st.dataframe(example_data, use_container_width=True)
-st.success("✅ Voici ce que Gemini détectera automatiquement!")
-
-# ============================================
-# FOOTER
-# ============================================
-
-st.markdown("---")
-st.markdown("""
-<div style='background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); padding: 20px; border-radius: 10px; color: white;'>
-<h3 style='text-align: center; color: white;'>🤖 Extracteur de Numéros avec Google Gemini AI</h3>
-<div style='display: flex; justify-content: space-around; margin-top: 20px;'>
-<div style='text-align: center;'>
-<h4 style='color: white;'>🎯 Haute Précision</h4>
-<p>IA avancée de Google</p>
-</div>
-<div style='text-align: center;'>
-<h4 style='color: white;'>⚡ Rapide</h4>
-<p>Analyse en quelques secondes</p>
-</div>
-<div style='text-align: center;'>
-<h4 style='color: white;'>💎 Gratuit</h4>
-<p>1500 requêtes/jour</p>
-</div>
-<div style='text-align: center;'>
-<h4 style='color: white;'>📤 Export</h4>
-<p>CSV, Excel, JSON</p>
-</div>
-</div>
-<p style='text-align: center; margin-top: 20px; font-size: 12px;'>
-✅ Version 2.0 | Compatible Streamlit Cloud | API Gemini intégrée
-</p>
-</div>
-""", unsafe_allow_html=True)
-
-# ============================================
-# LANCEMENT DE L'APPLICATION
-# ============================================
-
-if __name__ == "__main__":
-main()
+        
+        if uploaded_files:
+            st.session_state.uploaded_images = uploaded_files
+            st.success(f"{len(uploaded_files)} image(s) chargee(s)")
+        
+        st.markdown("---")
+        
+        st.header("Statut AI")
+        if st.session_state.gemini_ready:
+            st.success(st.session_state.gemini_message)
+            st.info("1500 requetes/jour gratuites")
+        else:
+            st.error(st.session_state.gemini_message)
+        
+        st.markdown("---")
+        
+        st.header("Actions")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("ANALYSER", type="primary", use_container_width=True):
+                if not st.session_state.uploaded_images:
+                    st.warning("Chargez d'abord des images")
+                elif not st.session_state.gemini_ready:
+                    st.error("Gemini n'est pas initialise")
+                else:
+                    st.session_state.processing = True
+                    st.session_state.results = []
+                    st.rerun()
+        
+        with col2:
+            if st.button("REINITIALISER", use_container_width=True):
+                st.session_state.uploaded_images = []
+                st.session_state.results = []
+                st.session_state.processing = False
+                st.rerun()
+        
+        st.markdown("---")
+        
+        st.header("Statistiques")
+        st.metric("Images chargees", len(st.session_state.uploaded_images))
+        st.metric("Resultats", len(st.session_state.results))
+        
+        if st.session_state.results:
+            total_numbers = sum(len(r.get('numbers', [])) for r in st.session_state.results)
+            st.metric("Total numeros", total_numbers)
+    
+    # Zone principale
+    tab1, tab2, tab3 = st.tabs(["Galerie", "Analyse", "Resultats"])
+    
+    # Tab 1: Galerie
+    with tab1:
+        st.header("Galerie d'images")
+        
+        if st.session_state.uploaded_images:
+            cols = st.columns(min(3, len(st.session_state.uploaded_images)))
+            
+            for idx, img_file in enumerate(st.session_state.uploaded_images):
+                with cols[idx % 3]:
+                    image = Image.open(img_file)
+                    st.image(image, caption=img_file.name, use_container_width=True)
+                    
+                    st.caption(f"Taille: {image.size[0]}x{image.size[1]}")
+                    
+                    if st.button(f"Supprimer", key=f"del_{idx}"):
+                        st.session_state.uploaded_images.pop(idx)
+                        st.rerun()
+        else:
+            st.info("Chargez des images dans la barre laterale")
+            
+            st.markdown("---")
+            st.markdown("### Exemple de detection")
+            
+            st.markdown("""
+            **Image type (comme TESTO01.jpeg):**
