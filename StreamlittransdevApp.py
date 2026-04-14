@@ -4,10 +4,7 @@ from PIL import Image, ImageEnhance, ImageFilter
 import io
 import re
 from datetime import datetime
-import pytesseract
-import os
 
-# Configuration de la page
 st.set_page_config(
     page_title="Extracteur Numeros Compteur",
     page_icon="123",
@@ -17,135 +14,198 @@ st.set_page_config(
 st.title("Extracteur de Numeros - Compteur Horaire/Kilometrage")
 st.markdown("---")
 
-# Configuration Tesseract pour Streamlit Cloud
-if os.path.exists('/usr/bin/tesseract'):
-    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-elif os.path.exists('/usr/local/bin/tesseract'):
-    pytesseract.pytesseract.tesseract_cmd = '/usr/local/bin/tesseract'
-
-def preprocess_counter_image(image):
-    """Pretraitement optimise pour les photos de compteurs"""
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
+def preprocess_image(image):
+    """Pretraitement de l'image"""
+    if image.mode != 'L':
+        image = image.convert('L')
     
     width, height = image.size
-    if width < 1500:
-        ratio = 1500 / width
+    if width < 1200:
+        ratio = 1200 / width
         new_width = int(width * ratio)
         new_height = int(height * ratio)
         image = image.resize((new_width, new_height), Image.LANCZOS)
     
-    gray = image.convert('L')
+    enhancer = ImageEnhance.Contrast(image)
+    image = enhancer.enhance(3.0)
     
-    enhancer = ImageEnhance.Contrast(gray)
-    gray = enhancer.enhance(3.5)
+    enhancer = ImageEnhance.Sharpness(image)
+    image = enhancer.enhance(2.5)
     
-    enhancer = ImageEnhance.Sharpness(gray)
-    gray = enhancer.enhance(3.0)
+    image = image.filter(ImageFilter.MedianFilter(size=3))
     
-    gray = gray.filter(ImageFilter.MedianFilter(size=3))
-    
-    return gray, image
+    return image
 
-def create_binary_versions(gray_image):
-    """Cree differentes versions binaires"""
-    versions = []
+def find_text_regions(binary_image):
+    """Trouve les regions de texte"""
+    width, height = binary_image.size
+    pixels = binary_image.load()
     
-    v1 = gray_image.point(lambda x: 0 if x < 150 else 255, '1')
-    versions.append(v1)
+    visited = [[False for _ in range(width)] for _ in range(height)]
+    regions = []
     
-    v2 = gray_image.point(lambda x: 0 if x < 180 else 255, '1')
-    versions.append(v2)
+    for y in range(height):
+        for x in range(width):
+            if pixels[x, y] == 0 and not visited[y][x]:
+                component = []
+                queue = [(x, y)]
+                visited[y][x] = True
+                
+                min_x = max_x = x
+                min_y = max_y = y
+                
+                while queue:
+                    cx, cy = queue.pop(0)
+                    component.append((cx, cy))
+                    
+                    min_x = min(min_x, cx)
+                    max_x = max(max_x, cx)
+                    min_y = min(min_y, cy)
+                    max_y = max(max_y, cy)
+                    
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            nx, ny = cx + dx, cy + dy
+                            if (0 <= nx < width and 0 <= ny < height and
+                                not visited[ny][nx] and pixels[nx, ny] == 0):
+                                queue.append((nx, ny))
+                                visited[ny][nx] = True
+                
+                if len(component) > 30:
+                    regions.append({
+                        'bbox': (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1),
+                        'size': len(component),
+                        'center_y': (min_y + max_y) // 2
+                    })
     
-    v3 = gray_image.point(lambda x: 0 if x < 120 else 255, '1')
-    versions.append(v3)
-    
-    v4 = gray_image.point(lambda x: 255 - x)
-    v4 = v4.point(lambda x: 0 if x < 150 else 255, '1')
-    versions.append(v4)
-    
-    return versions
+    return regions
 
-def extract_numbers_from_image(image):
-    """Extrait tous les numeros avec Tesseract"""
-    all_numbers = set()
-    all_text = []
+def group_into_lines(regions):
+    """Groupe les regions en lignes"""
+    if not regions:
+        return []
     
-    gray, original = preprocess_counter_image(image)
-    binary_versions = create_binary_versions(gray)
+    sorted_regions = sorted(regions, key=lambda r: r['center_y'])
+    lines = []
+    current_line = [sorted_regions[0]]
     
-    configs = [
-        '--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789',
-        '--psm 8 --oem 3 -c tessedit_char_whitelist=0123456789',
-        '--psm 13 --oem 3 -c tessedit_char_whitelist=0123456789',
-        '--psm 6 --oem 3',
-    ]
-    
-    for version in binary_versions:
-        for config in configs:
-            try:
-                text = pytesseract.image_to_string(version, config=config, lang='fra+eng')
-                if text:
-                    all_text.append(text)
-                    numbers = re.findall(r'\b\d{4,}\b', text)
-                    all_numbers.update(numbers)
-                    numbers2 = re.findall(r'\b\d[\d\s]{3,}\d\b', text)
-                    for num in numbers2:
-                        clean = re.sub(r'\s+', '', num)
-                        if clean.isdigit() and len(clean) >= 4:
-                            all_numbers.add(clean)
-            except:
-                pass
-    
-    try:
-        text_gray = pytesseract.image_to_string(gray, config='--psm 6 --oem 3', lang='fra+eng')
-        if text_gray:
-            all_text.append(text_gray)
-            numbers = re.findall(r'\b\d{4,}\b', text_gray)
-            all_numbers.update(numbers)
-    except:
-        pass
-    
-    return list(all_numbers), ' '.join(all_text)
-
-def classify_numbers(numbers, full_text):
-    """Classe les numeros en heures et kilometrages"""
-    heure_numbers = []
-    km_numbers = []
-    autres = []
-    
-    text_lower = full_text.lower()
-    
-    for num in numbers:
-        if 'heure' in text_lower or 'hour' in text_lower or 'time' in text_lower:
-            heure_numbers.append(num)
-        elif 'km' in text_lower or 'kilomet' in text_lower or 'mile' in text_lower:
-            km_numbers.append(num)
+    for i in range(1, len(sorted_regions)):
+        if abs(sorted_regions[i]['center_y'] - sorted_regions[i-1]['center_y']) <= 20:
+            current_line.append(sorted_regions[i])
         else:
-            if 7 <= len(num) <= 9:
-                heure_numbers.append(num)
-            elif 4 <= len(num) <= 6:
-                km_numbers.append(num)
-            else:
-                autres.append(num)
+            lines.append(current_line)
+            current_line = [sorted_regions[i]]
     
-    return {
-        'heures': heure_numbers,
-        'kilometrages': km_numbers,
-        'autres': autres
-    }
+    lines.append(current_line)
+    return lines
 
-# Session state
+def extract_number_from_line(line_regions):
+    """Extrait un numero d'une ligne"""
+    if len(line_regions) < 3:
+        return None
+    
+    sorted_line = sorted(line_regions, key=lambda r: r['bbox'][0])
+    
+    min_x = min(r['bbox'][0] for r in sorted_line)
+    max_x = max(r['bbox'][0] + r['bbox'][2] for r in sorted_line)
+    
+    line_width = max_x - min_x
+    estimated_chars = line_width // 12
+    
+    if estimated_chars >= 4:
+        return estimated_chars
+    
+    return None
+
+def analyze_image(image):
+    """Analyse complete de l'image"""
+    try:
+        processed = preprocess_image(image)
+        
+        thresholds = [140, 160, 180, 200]
+        all_numbers = []
+        
+        for thresh in thresholds:
+            binary = processed.point(lambda x: 0 if x < thresh else 255, '1')
+            regions = find_text_regions(binary)
+            lines = group_into_lines(regions)
+            
+            for line in lines:
+                chars = extract_number_from_line(line)
+                if chars:
+                    all_numbers.append(chars)
+        
+        if all_numbers:
+            max_chars = max(all_numbers)
+            min_chars = min(all_numbers)
+            
+            result = {
+                'heures': [f"NUMERO_{max_chars}_CHIFFRES"],
+                'kilometrages': [f"NUMERO_{min_chars}_CHIFFRES"],
+                'autres': [],
+                'regions_detectees': len(regions),
+                'lignes_detectees': len(lines)
+            }
+        else:
+            result = {
+                'heures': [],
+                'kilometrages': [],
+                'autres': [],
+                'regions_detectees': len(regions),
+                'lignes_detectees': len(lines)
+            }
+        
+        return result
+        
+    except Exception as e:
+        return {
+            'heures': [],
+            'kilometrages': [],
+            'autres': [],
+            'error': str(e)
+        }
+
+def manual_extraction_interface(image, idx):
+    """Interface de saisie manuelle"""
+    st.image(image, caption=f"Photo {idx+1}", width=300)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        heures = st.text_input(
+            "Nombre d'heures",
+            key=f"heures_{idx}",
+            placeholder="Ex: 10406871"
+        )
+    
+    with col2:
+        km = st.text_input(
+            "Kilometrage",
+            key=f"km_{idx}",
+            placeholder="Ex: 623743"
+        )
+    
+    return heures, km
+
 if 'uploaded_images' not in st.session_state:
     st.session_state.uploaded_images = []
 if 'results' not in st.session_state:
     st.session_state.results = []
-if 'processing' not in st.session_state:
-    st.session_state.processing = False
+if 'mode' not in st.session_state:
+    st.session_state.mode = "Manuel"
 
-# Sidebar
 with st.sidebar:
-    st.header("Upload Photos Compteur")
+    st.header("Configuration")
+    
+    st.session_state.mode = st.radio(
+        "Mode d'extraction",
+        ["Manuel", "Automatique"],
+        help="Manuel: saisie directe\nAutomatique: detection par analyse d'image"
+    )
+    
+    st.markdown("---")
+    
+    st.header("Upload Photos")
     
     uploaded_files = st.file_uploader(
         "Choisissez vos photos",
@@ -155,31 +215,17 @@ with st.sidebar:
     
     if uploaded_files:
         st.session_state.uploaded_images = uploaded_files
-        st.success(f"{len(uploaded_files)} photo(s) chargee(s)")
+        st.success(f"{len(uploaded_files)} photo(s)")
     
     st.markdown("---")
-    
-    st.header("Parametres")
-    
-    min_digits = st.slider(
-        "Nombre minimum de chiffres",
-        min_value=3,
-        max_value=10,
-        value=4
-    )
-    
-    st.markdown("---")
-    
-    st.header("Actions")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("ANALYSER", type="primary", use_container_width=True):
+        if st.button("VALIDER", type="primary", use_container_width=True):
             if not st.session_state.uploaded_images:
                 st.warning("Chargez des photos")
             else:
-                st.session_state.processing = True
                 st.session_state.results = []
                 st.rerun()
     
@@ -188,198 +234,119 @@ with st.sidebar:
             st.session_state.uploaded_images = []
             st.session_state.results = []
             st.rerun()
-    
-    st.markdown("---")
-    
-    st.header("Statistiques")
-    st.metric("Photos", len(st.session_state.uploaded_images))
-    st.metric("Analyses", len(st.session_state.results))
 
-# Zone principale
-tab1, tab2, tab3 = st.tabs(["Photos", "Analyse", "Resultats"])
+st.header("Extraction des donnees")
 
-with tab1:
-    st.header("Photos de compteurs")
-    
-    if st.session_state.uploaded_images:
-        cols = st.columns(min(2, len(st.session_state.uploaded_images)))
+if st.session_state.uploaded_images:
+    if st.session_state.mode == "Manuel":
+        st.subheader("Saisie manuelle des numeros")
+        
+        all_results = []
         
         for idx, img_file in enumerate(st.session_state.uploaded_images):
-            with cols[idx % 2]:
-                image = Image.open(img_file)
-                st.image(image, caption=img_file.name, use_container_width=True)
-                
-                if st.button(f"Supprimer", key=f"del_{idx}"):
-                    st.session_state.uploaded_images.pop(idx)
-                    st.rerun()
-    else:
-        st.info("Chargez des photos de compteurs dans la barre laterale")
-        st.markdown("---")
-        st.markdown("### Exemple de photo attendue")
-        st.write("Contenu typique:")
-        st.code("Nombre d'heure\n10406871\nKilometrage\n623743")
-        st.write("Numeros qui seront detectes: 10406871 (Heures) et 623743 (Kilometrage)")
-
-with tab2:
-    st.header("Analyse OCR en cours")
-    
-    if st.session_state.processing:
-        st.info("Traitement des photos...")
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        for idx, img_file in enumerate(st.session_state.uploaded_images):
-            status_text.text(f"Analyse de {img_file.name} ({idx+1}/{len(st.session_state.uploaded_images)})")
+            st.markdown(f"### Photo {idx+1}: {img_file.name}")
             
             image = Image.open(img_file)
+            heures, km = manual_extraction_interface(image, idx)
             
-            col1, col2 = st.columns([1, 2])
+            if heures or km:
+                result = {
+                    'filename': img_file.name,
+                    'heures': [heures] if heures else [],
+                    'kilometrages': [km] if km else [],
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                all_results.append(result)
             
-            with col1:
-                st.image(image, caption=f"Original: {img_file.name}", use_container_width=True)
-            
-            with col2:
-                with st.spinner("Tesseract OCR en cours..."):
-                    numbers, full_text = extract_numbers_from_image(image)
-                    numbers = [n for n in numbers if len(n) >= min_digits]
-                    classified = classify_numbers(numbers, full_text)
-                    
-                    result = {
-                        'filename': img_file.name,
-                        'heures': classified['heures'],
-                        'kilometrages': classified['kilometrages'],
-                        'autres': classified['autres'],
-                        'all_numbers': numbers,
-                        'full_text': full_text,
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    }
-                    
-                    if classified['heures']:
-                        st.success(f"Heures: {', '.join(classified['heures'])}")
-                    if classified['kilometrages']:
-                        st.success(f"Kilometrage: {', '.join(classified['kilometrages'])}")
-                    
-                    if not numbers:
-                        st.warning("Aucun numero detecte")
-                    
-                    st.session_state.results.append(result)
-            
-            progress_bar.progress((idx + 1) / len(st.session_state.uploaded_images))
+            st.markdown("---")
         
-        status_text.text("Analyse terminee!")
-        st.session_state.processing = False
-        st.success("Toutes les photos ont ete analysees!")
-        st.rerun()
+        if st.button("ENREGISTRER TOUT", type="primary"):
+            st.session_state.results = all_results
+            st.success(f"{len(all_results)} photos enregistrees!")
+            st.rerun()
     
     else:
-        if st.session_state.uploaded_images:
-            st.info("Cliquez sur 'ANALYSER' dans la barre laterale")
-        else:
-            st.info("Uploadez des photos")
-
-with tab3:
-    st.header("Resultats de l'extraction")
-    
-    if st.session_state.results:
-        st.subheader("Resume des extractions")
+        st.subheader("Analyse automatique")
         
-        summary_data = []
-        all_heures = []
-        all_km = []
-        
-        for r in st.session_state.results:
-            summary_data.append({
-                'Fichier': r['filename'],
-                'Heures': len(r['heures']),
-                'Kilometrages': len(r['kilometrages']),
-                'Autres': len(r['autres']),
-                'Date': r['timestamp']
-            })
-            all_heures.extend(r['heures'])
-            all_km.extend(r['kilometrages'])
-        
-        df_summary = pd.DataFrame(summary_data)
-        st.dataframe(df_summary, use_container_width=True)
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Fichiers", len(st.session_state.results))
-        with col2:
-            st.metric("Heures", len(all_heures))
-        with col3:
-            st.metric("Kilometrages", len(all_km))
-        with col4:
-            st.metric("Total numeros", len(all_heures) + len(all_km))
-        
-        st.markdown("---")
-        
-        st.subheader("Details par photo")
-        
-        for idx, result in enumerate(st.session_state.results):
-            with st.expander(f"{result['filename']}"):
+        if st.button("LANCER L'ANALYSE", type="primary"):
+            progress_bar = st.progress(0)
+            
+            for idx, img_file in enumerate(st.session_state.uploaded_images):
+                st.write(f"Analyse: {img_file.name}")
+                
+                image = Image.open(img_file)
+                
                 col1, col2 = st.columns([1, 2])
                 
                 with col1:
-                    img_file = st.session_state.uploaded_images[idx] if idx < len(st.session_state.uploaded_images) else None
-                    if img_file:
-                        image = Image.open(img_file)
-                        st.image(image, width=250)
+                    st.image(image, width=250)
                 
                 with col2:
-                    st.write(f"Date: {result['timestamp']}")
-                    
-                    if result['heures']:
-                        st.success("Nombres d'heures:")
-                        for num in result['heures']:
-                            st.code(num, language='text')
-                    
-                    if result['kilometrages']:
-                        st.success("Kilometrages:")
-                        for num in result['kilometrages']:
-                            st.code(num, language='text')
-        
-        st.markdown("---")
-        st.subheader("Export des resultats")
-        
-        export_data = []
-        for r in st.session_state.results:
-            for num in r['heures']:
-                export_data.append({
-                    'Fichier': r['filename'],
-                    'Type': 'Heures',
-                    'Valeur': num,
-                    'Date': r['timestamp']
-                })
-            for num in r['kilometrages']:
-                export_data.append({
-                    'Fichier': r['filename'],
-                    'Type': 'Kilometrage',
-                    'Valeur': num,
-                    'Date': r['timestamp']
-                })
-        
-        if export_data:
-            df_export = pd.DataFrame(export_data)
-            csv_data = df_export.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="TELECHARGER CSV",
-                data=csv_data,
-                file_name=f"compteur_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-    
-    else:
-        st.info("Aucun resultat disponible. Lancez une analyse.")
+                    with st.spinner("Analyse..."):
+                        result = analyze_image(image)
+                        result['filename'] = img_file.name
+                        result['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        if result['heures']:
+                            st.success(f"Heures detectees: {', '.join(result['heures'])}")
+                        if result['kilometrages']:
+                            st.success(f"Km detectes: {', '.join(result['kilometrages'])}")
+                        
+                        st.session_state.results.append(result)
+                
+                progress_bar.progress((idx + 1) / len(st.session_state.uploaded_images))
+            
+            st.success("Analyse terminee!")
+            st.rerun()
 
-# Footer
+if st.session_state.results:
+    st.markdown("---")
+    st.subheader("Resultats enregistres")
+    
+    summary_data = []
+    all_heures = []
+    all_km = []
+    
+    for r in st.session_state.results:
+        summary_data.append({
+            'Fichier': r['filename'],
+            'Heures': ', '.join(r['heures']) if r['heures'] else '-',
+            'Kilometrage': ', '.join(r['kilometrages']) if r['kilometrages'] else '-',
+            'Date': r['timestamp']
+        })
+        
+        all_heures.extend(r['heures'])
+        all_km.extend(r['kilometrages'])
+    
+    df_summary = pd.DataFrame(summary_data)
+    st.dataframe(df_summary, use_container_width=True)
+    
+    st.markdown("---")
+    st.subheader("Export CSV")
+    
+    export_data = []
+    for r in st.session_state.results:
+        for h in r['heures']:
+            export_data.append({'Fichier': r['filename'], 'Type': 'Heures', 'Valeur': h})
+        for k in r['kilometrages']:
+            export_data.append({'Fichier': r['filename'], 'Type': 'Kilometrage', 'Valeur': k})
+    
+    if export_data:
+        df_export = pd.DataFrame(export_data)
+        csv_data = df_export.to_csv(index=False, encoding='utf-8-sig')
+        
+        st.download_button(
+            label="TELECHARGER CSV",
+            data=csv_data,
+            file_name=f"compteur_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
 st.markdown("---")
 st.markdown("""
-<div style='background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); padding: 20px; border-radius: 10px; color: white; text-align: center;'>
-    <h3 style='color: white;'>Extracteur de Numeros - Compteurs</h3>
-    <p>Detection automatique des heures et kilometrages</p>
-    <p style='font-size: 12px;'>Tesseract OCR | Compatible Streamlit Cloud</p>
+<div style='background: #1e3c72; padding: 20px; border-radius: 10px; color: white; text-align: center;'>
+    <h3>Extracteur de Numeros - Compteurs</h3>
+    <p>Mode Manuel + Automatique | Python Pur</p>
 </div>
 """, unsafe_allow_html=True)
