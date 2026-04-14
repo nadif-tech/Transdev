@@ -3,10 +3,23 @@ import pandas as pd
 import re
 import io
 from PIL import Image
-import pytesseract
+import easyocr
 
 st.set_page_config(page_title="Extracteur Numéros", page_icon="📸")
 st.title("📸 Extraire les numéros des photos")
+
+# Initialiser EasyOCR (une seule fois)
+@st.cache_resource
+def load_reader():
+    return easyocr.Reader(['fr', 'en'], gpu=False)
+
+try:
+    with st.spinner("🔄 Chargement du modèle OCR..."):
+        reader = load_reader()
+    st.success("✅ Modèle OCR chargé")
+except Exception as e:
+    st.error(f"❌ Erreur de chargement : {str(e)}")
+    st.stop()
 
 # Upload des photos
 fichiers = st.file_uploader(
@@ -23,9 +36,10 @@ if fichiers:
         st.image(image, caption=fichier.name, width=400)
         
         with st.spinner(f"🔍 Analyse de {fichier.name}..."):
-            # OCR avec Tesseract
             try:
-                texte = pytesseract.image_to_string(image)
+                # OCR avec EasyOCR
+                result = reader.readtext(image, detail=0)
+                texte = " ".join(result)
                 
                 # Extraire tous les nombres
                 numeros = re.findall(r'\d+', texte)
