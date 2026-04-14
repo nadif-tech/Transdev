@@ -1,199 +1,243 @@
 import streamlit as st
 import pandas as pd
-from PIL import Image
-import numpy as np
-import cv2
+from PIL import Image, ImageFilter, ImageEnhance
 import io
 import re
 from datetime import datetime
-import os
+import math
 
 # Configuration de la page
 st.set_page_config(
-    page_title="Extracteur de Numéros - OpenCV",
+    page_title="Extracteur de Numéros",
     page_icon="📸",
     layout="wide"
 )
 
-st.title("📸 Extracteur de Numéros avec OpenCV")
+st.title("📸 Extracteur de Numéros depuis Photos")
 st.markdown("---")
 
-# Initialisation des classificateurs en cascade (détection de texte)
-@st.cache_resource
-def load_cascade_classifiers():
-    """Charge les classificateurs OpenCV"""
-    classifiers = {}
-    
-    # Télécharger les fichiers cascade si nécessaire
-    cascade_files = {
-        'digits': cv2.data.haarcascades + 'haarcascade_russian_plate_number.xml',
-        'face': cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-    }
-    
-    for name, path in cascade_files.items():
-        if os.path.exists(path):
-            classifiers[name] = cv2.CascadeClassifier(path)
-    
-    return classifiers
-
-def preprocess_image(image):
-    """Prétraitement de l'image pour meilleure détection"""
-    # Convertir PIL en OpenCV
-    if isinstance(image, Image.Image):
-        image = np.array(image)
-    
+def preprocess_image_pil(image):
+    """Prétraitement d'image avec PIL uniquement"""
     # Convertir en niveaux de gris
-    if len(image.shape) == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    else:
-        gray = image
+    if image.mode != 'L':
+        image = image.convert('L')
     
     # Améliorer le contraste
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    enhanced = clahe.apply(gray)
+    enhancer = ImageEnhance.Contrast(image)
+    image = enhancer.enhance(2.0)
     
-    # Débruitage
-    denoised = cv2.fastNlMeansDenoising(enhanced)
+    # Améliorer la netteté
+    enhancer = ImageEnhance.Sharpness(image)
+    image = enhancer.enhance(2.0)
     
-    # Binarisation adaptative
-    binary = cv2.adaptiveThreshold(
-        denoised, 255, 
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY_INV, 11, 2
-    )
+    # Appliquer un filtre pour faire ressortir les bords
+    image = image.filter(ImageFilter.EDGE_ENHANCE_MORE)
     
-    return image, gray, binary
+    return image
 
-def detect_text_regions(binary_image):
-    """Détecte les régions contenant du texte/numéros"""
-    # Trouver les contours
-    contours, _ = cv2.findContours(
-        binary_image, 
-        cv2.RETR_EXTERNAL, 
-        cv2.CHAIN_APPROX_SIMPLE
-    )
-    
-    regions = []
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        
-        # Filtrer les régions trop petites
-        if w > 20 and h > 20 and w < binary_image.shape[1]//2:
-            aspect_ratio = w / h
-            # Les numéros ont généralement un aspect ratio entre 0.2 et 5
-            if 0.2 < aspect_ratio < 5:
-                regions.append((x, y, w, h))
-    
-    return regions
+def binarize_image(image, threshold=128):
+    """Binarisation simple de l'image"""
+    # Convertir en noir et blanc
+    bw_image = image.point(lambda x: 0 if x < threshold else 255, '1')
+    return bw_image
 
-def extract_digits_morphological(binary_image):
-    """Extrait les chiffres par morphologie mathématique"""
-    # Opérations morphologiques pour isoler les chiffres
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+def find_connected_components(bw_image):
+    """Trouve les composants connectés (chiffres potentiels)"""
+    # Convertir en tableau de pixels
+    pixels = bw_image.load()
+    width, height = bw_image.size
     
-    # Dilatation pour connecter les parties des chiffres
-    dilated = cv2.dilate(binary_image, kernel, iterations=1)
+    # Matrice pour marquer les pixels visités
+    visited = [[False for _ in range(width)] for _ in range(height)]
     
-    # Érosion pour enlever le bruit
-    eroded = cv2.erode(dilated, kernel, iterations=1)
+    components = []
     
-    # Trouver les composants connectés
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        eroded, connectivity=8
-    )
-    
-    digits_found = []
-    
-    for i in range(1, num_labels):
-        x = stats[i, cv2.CC_STAT_LEFT]
-        y = stats[i, cv2.CC_STAT_TOP]
-        w = stats[i, cv2.CC_STAT_WIDTH]
-        h = stats[i, cv2.CC_STAT_HEIGHT]
-        area = stats[i, cv2.CC_STAT_AREA]
-        
-        # Filtrer par taille et proportions (caractéristiques des chiffres)
-        if 100 < area < 5000 and 10 < w < 100 and 20 < h < 150:
-            aspect_ratio = h / w
-            if 1.5 < aspect_ratio < 4.0:  # Les chiffres sont plus hauts que larges
-                roi = binary_image[y:y+h, x:x+w]
+    # Parcourir tous les pixels
+    for y in range(height):
+        for x in range(width):
+            if pixels[x, y] == 0 and not visited[y][x]:  # Pixel noir
+                # BFS pour trouver le composant connecté
+                component = []
+                queue = [(x, y)]
+                visited[y][x] = True
                 
-                # Compter les pixels blancs
-                white_pixels = cv2.countNonZero(roi)
-                density = white_pixels / (w * h)
+                min_x, max_x = x, x
+                min_y, max_y = y, y
                 
-                if 0.1 < density < 0.8:  # Densité raisonnable pour un chiffre
-                    digits_found.append({
-                        'bbox': (x, y, w, h),
-                        'area': area,
-                        'density': density
+                while queue:
+                    cx, cy = queue.pop(0)
+                    component.append((cx, cy))
+                    
+                    min_x = min(min_x, cx)
+                    max_x = max(max_x, cx)
+                    min_y = min(min_y, cy)
+                    max_y = max(max_y, cy)
+                    
+                    # Vérifier les 8 voisins
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            nx, ny = cx + dx, cy + dy
+                            if (0 <= nx < width and 0 <= ny < height and 
+                                not visited[ny][nx] and pixels[nx, ny] == 0):
+                                queue.append((nx, ny))
+                                visited[ny][nx] = True
+                
+                if len(component) > 10:  # Ignorer le bruit
+                    bbox = (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+                    components.append({
+                        'bbox': bbox,
+                        'size': len(component),
+                        'pixels': component
                     })
     
-    return digits_found
+    return components
 
-def recognize_digit_template(roi):
-    """Reconnaissance basique de chiffres par template matching"""
-    # Redimensionner à une taille standard
-    roi_resized = cv2.resize(roi, (20, 30))
+def is_likely_digit(component):
+    """Détermine si un composant ressemble à un chiffre"""
+    bbox = component['bbox']
+    width, height = bbox[2], bbox[3]
     
-    # Calculer des caractéristiques simples
-    moments = cv2.moments(roi_resized)
-    hu_moments = cv2.HuMoments(moments)
+    # Critères pour un chiffre
+    if width < 5 or height < 8:  # Trop petit
+        return False
     
-    # Compter les trous (pour distinguer 0, 6, 8, 9)
-    contours, _ = cv2.findContours(
-        roi_resized, 
-        cv2.RETR_CCOMP, 
-        cv2.CHAIN_APPROX_SIMPLE
-    )
-    num_holes = len(contours) - 1 if len(contours) > 1 else 0
+    if width > 100 or height > 200:  # Trop grand
+        return False
     
-    # Ratio de pixels
-    pixel_ratio = cv2.countNonZero(roi_resized) / (20 * 30)
+    # Ratio hauteur/largeur typique pour les chiffres
+    aspect_ratio = height / width
+    if aspect_ratio < 1.2 or aspect_ratio > 4.0:
+        return False
     
-    return {
-        'hu_moments': hu_moments.flatten()[:4],
-        'holes': num_holes,
-        'pixel_ratio': pixel_ratio
-    }
+    # Densité de pixels
+    density = component['size'] / (width * height)
+    if density < 0.1 or density > 0.9:
+        return False
+    
+    return True
 
-def extract_numbers_from_image(image):
-    """Extrait les numéros d'une image avec OpenCV"""
+def group_digits_into_numbers(components, max_gap=15, vertical_tolerance=10):
+    """Groupe les chiffres en nombres basé sur la proximité"""
+    if not components:
+        return []
+    
+    # Trier par position x
+    sorted_comps = sorted(components, key=lambda c: c['bbox'][0])
+    
+    numbers = []
+    current_number = [sorted_comps[0]]
+    
+    for i in range(1, len(sorted_comps)):
+        current = sorted_comps[i]
+        previous = sorted_comps[i-1]
+        
+        # Distance horizontale
+        x_distance = current['bbox'][0] - (previous['bbox'][0] + previous['bbox'][2])
+        
+        # Différence verticale
+        y_center_current = current['bbox'][1] + current['bbox'][3] / 2
+        y_center_previous = previous['bbox'][1] + previous['bbox'][3] / 2
+        y_difference = abs(y_center_current - y_center_previous)
+        
+        # Si proche, ajouter au nombre courant
+        if x_distance <= max_gap and y_difference <= vertical_tolerance:
+            current_number.append(current)
+        else:
+            # Commencer un nouveau nombre
+            if len(current_number) >= 1:
+                numbers.append(current_number)
+            current_number = [current]
+    
+    if current_number:
+        numbers.append(current_number)
+    
+    return numbers
+
+def recognize_digit_simple(component):
+    """Reconnaissance simple de chiffres basée sur des caractéristiques"""
+    bbox = component['bbox']
+    width, height = bbox[2], bbox[3]
+    density = component['size'] / (width * height)
+    aspect_ratio = height / width
+    
+    # Logique simple de reconnaissance
+    if aspect_ratio > 2.5 and density < 0.4:
+        return '1'
+    elif density > 0.7:
+        return '8'
+    elif density < 0.3:
+        return '7'
+    elif 1.5 < aspect_ratio < 2.0:
+        return '4'
+    else:
+        return '0'  # Par défaut
+    
+    # Note: Cette reconnaissance est basique. Pour une meilleure précision,
+    # il faudrait implémenter un OCR plus sophistiqué ou utiliser une API.
+
+def extract_text_with_regex(image):
+    """Extrait le texte en utilisant des patterns regex sur les métadonnées"""
+    # Cette méthode est un fallback simple
+    numbers = []
+    
+    # Extraire du nom de fichier si disponible
+    if hasattr(image, 'filename') and image.filename:
+        numbers.extend(re.findall(r'\b\d+\b', image.filename))
+    
+    # Vérifier les métadonnées EXIF
+    if hasattr(image, '_getexif') and image._getexif():
+        exif = image._getexif()
+        if exif:
+            for value in exif.values():
+                if isinstance(value, str):
+                    numbers.extend(re.findall(r'\b\d+\b', value))
+    
+    return numbers
+
+def process_image_pure_python(image):
+    """Traite une image avec du Python pur (PIL uniquement)"""
     try:
         # Prétraitement
-        original, gray, binary = preprocess_image(image)
+        processed = preprocess_image_pil(image)
         
-        # Méthode 1: Détection de régions de texte
-        regions = detect_text_regions(binary)
+        # Binarisation
+        binary = binarize_image(processed, threshold=150)
         
-        # Méthode 2: Extraction morphologique des chiffres
-        digits = extract_digits_morphological(binary)
+        # Trouver les composants
+        components = find_connected_components(binary)
         
-        # Grouper les chiffres par proximité
-        grouped_numbers = group_digits_by_proximity(digits)
+        # Filtrer les composants qui ressemblent à des chiffres
+        digit_components = [c for c in components if is_likely_digit(c)]
         
-        # Convertir en texte
-        detected_text = ""
-        detected_numbers = []
+        # Grouper en nombres
+        number_groups = group_digits_into_numbers(digit_components)
         
-        if grouped_numbers:
-            for group in grouped_numbers:
-                number_str = ''.join(group['digits'])
-                detected_text += f" {number_str}"
-                detected_numbers.append(number_str)
+        # Reconnaître les chiffres (version simple)
+        recognized_numbers = []
+        for group in number_groups:
+            digits = []
+            for comp in group:
+                digit = recognize_digit_simple(comp)
+                digits.append(digit)
+            
+            number_str = ''.join(digits)
+            recognized_numbers.append(number_str)
         
-        # Extraire aussi les nombres avec regex du texte détecté
-        all_numbers = []
-        for num_str in detected_numbers:
-            numbers = re.findall(r'\b\d+\b', num_str)
-            all_numbers.extend(numbers)
+        # Fallback: chercher avec regex
+        regex_numbers = extract_text_with_regex(image)
+        all_numbers = list(set(recognized_numbers + regex_numbers))
+        
+        # Filtrer les nombres valides
+        valid_numbers = [n for n in all_numbers if len(n) >= 1 and n.isdigit()]
         
         return {
-            'text': detected_text.strip(),
-            'numbers': all_numbers,
-            'all_numbers': ', '.join(all_numbers) if all_numbers else '',
-            'count': len(all_numbers),
-            'regions_detectees': len(regions),
-            'chiffres_detectes': len(digits),
+            'text': ' '.join(valid_numbers),
+            'numbers': valid_numbers,
+            'all_numbers': ', '.join(valid_numbers) if valid_numbers else '',
+            'count': len(valid_numbers),
+            'components_found': len(components),
+            'digits_found': len(digit_components),
+            'number_groups': len(number_groups),
             'success': True
         }
         
@@ -203,79 +247,12 @@ def extract_numbers_from_image(image):
             'numbers': [],
             'all_numbers': '',
             'count': 0,
-            'regions_detectees': 0,
-            'chiffres_detectes': 0,
+            'components_found': 0,
+            'digits_found': 0,
+            'number_groups': 0,
             'success': False,
             'error': str(e)
         }
-
-def group_digits_by_proximity(digits, x_threshold=50, y_threshold=20):
-    """Groupe les chiffres proches en nombres"""
-    if not digits:
-        return []
-    
-    # Trier par position x
-    sorted_digits = sorted(digits, key=lambda d: d['bbox'][0])
-    
-    groups = []
-    current_group = [sorted_digits[0]]
-    
-    for i in range(1, len(sorted_digits)):
-        current = sorted_digits[i]
-        previous = sorted_digits[i-1]
-        
-        x_dist = current['bbox'][0] - (previous['bbox'][0] + previous['bbox'][2])
-        y_diff = abs(current['bbox'][1] - previous['bbox'][1])
-        
-        # Si proche horizontalement et aligné verticalement
-        if x_dist < x_threshold and y_diff < y_threshold:
-            current_group.append(current)
-        else:
-            # Nouveau groupe
-            groups.append(current_group)
-            current_group = [current]
-    
-    if current_group:
-        groups.append(current_group)
-    
-    # Pour chaque groupe, essayer de reconnaître les chiffres
-    result = []
-    for group in groups:
-        group_digits = []
-        for digit in group:
-            # Estimation simple du chiffre basée sur la densité
-            density = digit['density']
-            bbox = digit['bbox']
-            
-            # Reconnaissance basique (à améliorer)
-            if density < 0.3:
-                estimated_digit = '1'  # Chiffre fin
-            elif density > 0.6:
-                estimated_digit = '8'  # Chiffre dense
-            else:
-                estimated_digit = '0'  # Densité moyenne
-            
-            group_digits.append(estimated_digit)
-        
-        result.append({
-            'bbox': group[0]['bbox'],
-            'digits': group_digits,
-            'count': len(group_digits)
-        })
-    
-    return result
-
-def draw_detections(image, digits):
-    """Dessine les détections sur l'image pour visualisation"""
-    img_copy = image.copy()
-    if len(img_copy.shape) == 2:
-        img_copy = cv2.cvtColor(img_copy, cv2.COLOR_GRAY2RGB)
-    
-    for digit in digits:
-        x, y, w, h = digit['bbox']
-        cv2.rectangle(img_copy, (x, y), (x+w, y+h), (0, 255, 0), 2)
-    
-    return img_copy
 
 def save_to_excel(data):
     """Convertit les données en fichier Excel"""
@@ -294,17 +271,25 @@ if 'all_results' not in st.session_state:
 
 # Sidebar
 with st.sidebar:
-    st.header("⚙️ Configuration OpenCV")
+    st.header("⚙️ Configuration")
     
-    # Paramètres ajustables
     st.subheader("Paramètres de détection")
     
-    min_confidence = st.slider(
-        "Sensibilité de détection",
-        min_value=0.1,
-        max_value=0.9,
-        value=0.5,
-        step=0.1
+    threshold = st.slider(
+        "Seuil de binarisation",
+        min_value=50,
+        max_value=200,
+        value=150,
+        step=10,
+        help="Ajuste la sensibilité de détection"
+    )
+    
+    min_size = st.slider(
+        "Taille minimale (pixels)",
+        min_value=5,
+        max_value=50,
+        value=10,
+        step=5
     )
     
     st.markdown("---")
@@ -312,13 +297,12 @@ with st.sidebar:
     # Upload de photos
     uploaded_files = st.file_uploader(
         "📁 Choisissez vos photos",
-        type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
-        accept_multiple_files=True,
-        help="Formats supportés: PNG, JPG, JPEG, BMP, TIFF"
+        type=['png', 'jpg', 'jpeg', 'bmp', 'tiff', 'gif'],
+        accept_multiple_files=True
     )
     
     # Appareil photo
-    camera_photo = st.camera_input("📷 Ou prenez une photo")
+    camera_photo = st.camera_input("📷 Prenez une photo")
     
     if camera_photo is not None:
         if camera_photo not in st.session_state.processed_images:
@@ -326,7 +310,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Actions
+    # Boutons d'action
     process_button = st.button(
         "🔍 Extraire les numéros", 
         type="primary", 
@@ -339,23 +323,12 @@ with st.sidebar:
             st.session_state.processed_images = []
             st.session_state.all_results = []
             st.rerun()
-    
-    with col2:
-        if st.button("ℹ️ Aide", use_container_width=True):
-            st.info("""
-            **Comment ça marche:**
-            1. Ajoutez des photos
-            2. Cliquez sur 'Extraire'
-            3. OpenCV détecte les zones de texte
-            4. Les numéros sont identifiés
-            5. Téléchargez en Excel
-            """)
 
 # Zone principale
-tab1, tab2, tab3 = st.tabs(["📋 Photos", "📊 Résultats", "🔬 Analyse"])
+col1, col2 = st.columns([1, 1])
 
-with tab1:
-    st.subheader("Photos à traiter")
+with col1:
+    st.subheader("📋 Photos à traiter")
     
     if uploaded_files:
         for file in uploaded_files:
@@ -363,51 +336,55 @@ with tab1:
                 st.session_state.processed_images.append(file)
     
     if st.session_state.processed_images:
-        cols = st.columns(3)
         for idx, img_file in enumerate(st.session_state.processed_images):
-            with cols[idx % 3]:
+            col_img, col_info, col_del = st.columns([2, 2, 1])
+            
+            with col_img:
                 image = Image.open(img_file)
-                st.image(image, caption=f"Photo {idx+1}", use_container_width=True)
-                
-                col_info, col_del = st.columns([3, 1])
-                with col_info:
-                    st.caption(f"📄 {img_file.name}")
-                with col_del:
-                    if st.button("❌", key=f"del_{idx}"):
-                        st.session_state.processed_images.pop(idx)
-                        st.rerun()
+                st.image(image, caption=f"Photo {idx+1}", width=150)
+            
+            with col_info:
+                st.write(f"**{img_file.name}**")
+                st.write(f"Taille: {image.size}")
+            
+            with col_del:
+                if st.button("❌", key=f"del_{idx}"):
+                    st.session_state.processed_images.pop(idx)
+                    st.rerun()
     else:
-        st.info("👆 Utilisez la barre latérale pour ajouter des photos")
+        st.info("👆 Ajoutez des photos via la barre latérale")
+        
+        # Zone de démonstration
+        st.markdown("### 📌 Comment ça marche:")
         st.markdown("""
-        ### 📌 Instructions:
-        1. **Upload** de photos depuis votre ordinateur
-        2. **Ou prenez** une photo avec votre caméra
-        3. **Cliquez** sur 'Extraire les numéros'
-        4. **Téléchargez** les résultats en Excel
+        1. **Ajoutez** des photos (upload ou caméra)
+        2. **Cliquez** sur 'Extraire les numéros'
+        3. **Visualisez** les résultats
+        4. **Téléchargez** en Excel
+        
+        ⚡ Utilise du Python pur - Aucune dépendance lourde!
         """)
 
-with tab2:
-    st.subheader("Résultats de l'extraction")
+with col2:
+    st.subheader("📊 Résultats")
     
     if process_button and st.session_state.processed_images:
         st.session_state.all_results = []
         progress_bar = st.progress(0)
-        status_text = st.empty()
         
         for idx, img_file in enumerate(st.session_state.processed_images):
-            status_text.text(f"Traitement de la photo {idx+1}/{len(st.session_state.processed_images)}...")
-            
-            image = Image.open(img_file)
-            result = extract_numbers_from_image(image)
-            
-            result['filename'] = img_file.name
-            result['processed_date'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            result['image_size'] = f"{image.size[0]}x{image.size[1]}"
-            
-            st.session_state.all_results.append(result)
+            with st.spinner(f"Traitement {idx+1}/{len(st.session_state.processed_images)}..."):
+                image = Image.open(img_file)
+                result = process_image_pure_python(image)
+                
+                result['filename'] = img_file.name
+                result['processed_date'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                result['image_size'] = f"{image.size[0]}x{image.size[1]}"
+                
+                st.session_state.all_results.append(result)
+                
             progress_bar.progress((idx + 1) / len(st.session_state.processed_images))
         
-        status_text.text("✅ Extraction terminée!")
         st.success(f"✅ {len(st.session_state.all_results)} photos traitées")
     
     if st.session_state.all_results:
@@ -415,89 +392,58 @@ with tab2:
         df_display = pd.DataFrame([
             {
                 'Photo': r['filename'],
-                'Taille': r['image_size'],
                 'Numéros': r['count'],
-                'Valeurs': r['all_numbers'][:50] + ('...' if len(r['all_numbers']) > 50 else ''),
-                'Régions': r.get('regions_detectees', 0),
-                'Chiffres': r.get('chiffres_detectes', 0)
+                'Valeurs': r['all_numbers'][:30] + ('...' if len(r['all_numbers']) > 30 else ''),
+                'Composants': r['components_found'],
+                'Chiffres': r['digits_found']
             }
             for r in st.session_state.all_results
         ])
         
         st.dataframe(df_display, use_container_width=True)
         
-        # Téléchargement Excel
-        st.markdown("### 💾 Export des résultats")
+        # Détails
+        with st.expander("🔍 Voir les détails"):
+            for idx, result in enumerate(st.session_state.all_results):
+                st.write(f"**{result['filename']}**")
+                if result['success']:
+                    st.write(f"✓ Composants: {result['components_found']}")
+                    st.write(f"✓ Chiffres détectés: {result['digits_found']}")
+                    st.write(f"✓ Groupes de nombres: {result['number_groups']}")
+                    st.write(f"✓ Numéros: {result['all_numbers']}")
+                else:
+                    st.error(f"Erreur: {result.get('error', 'Inconnue')}")
+                st.markdown("---")
+        
+        # Export Excel
+        st.markdown("### 💾 Sauvegarde")
         
         excel_data = []
         for result in st.session_state.all_results:
             excel_data.append({
-                'Nom du fichier': result['filename'],
-                'Date de traitement': result['processed_date'],
-                'Taille image': result['image_size'],
-                'Nombre de numéros': result['count'],
-                'Numéros trouvés': result['all_numbers'],
-                'Régions détectées': result.get('regions_detectees', 0),
-                'Chiffres détectés': result.get('chiffres_detectes', 0),
-                'Succès': 'Oui' if result['success'] else 'Non'
+                'Fichier': result['filename'],
+                'Date': result['processed_date'],
+                'Taille': result['image_size'],
+                'Numéros trouvés': result['count'],
+                'Valeurs': result['all_numbers'],
+                'Composants': result['components_found'],
+                'Chiffres': result['digits_found']
             })
         
         excel_file = save_to_excel(excel_data)
         
-        col_down1, col_down2 = st.columns([2, 1])
-        with col_down1:
-            st.download_button(
-                label="📥 Télécharger les résultats (Excel)",
-                data=excel_file,
-                file_name=f"numeros_opencv_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        
-        with col_down2:
-            if st.button("📋 Copier tous les numéros", use_container_width=True):
-                all_nums = []
-                for r in st.session_state.all_results:
-                    if r['numbers']:
-                        all_nums.extend(r['numbers'])
-                if all_nums:
-                    nums_text = ', '.join(all_nums)
-                    st.code(nums_text)
-                    st.success("Numéros copiés!")
-
-with tab3:
-    st.subheader("Analyse détaillée")
-    
-    if st.session_state.all_results:
-        for idx, result in enumerate(st.session_state.all_results):
-            with st.expander(f"📊 Photo {idx+1}: {result['filename']}"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write("**Informations:**")
-                    st.write(f"- Taille: {result['image_size']}")
-                    st.write(f"- Régions texte: {result.get('regions_detectees', 0)}")
-                    st.write(f"- Chiffres isolés: {result.get('chiffres_detectes', 0)}")
-                    st.write(f"- Numéros trouvés: {result['count']}")
-                
-                with col2:
-                    st.write("**Numéros détectés:**")
-                    if result['numbers']:
-                        for num in result['numbers']:
-                            st.code(num)
-                    else:
-                        st.warning("Aucun numéro détecté")
-                
-                if not result['success']:
-                    st.error(f"Erreur: {result.get('error', 'Inconnue')}")
-    else:
-        st.info("Traitez d'abord des photos pour voir l'analyse")
+        st.download_button(
+            label="📥 Télécharger Excel",
+            data=excel_file,
+            file_name=f"numeros_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #666;'>
-    <p>🔍 Extracteur de numéros avec OpenCV | Traitement d'image en temps réel</p>
-    <p style='font-size: 12px;'>Détection morphologique • Analyse de contours • Regroupement par proximité</p>
+    <p>🔍 Extracteur de Numéros | 100% Python Pur | Compatible Streamlit Cloud</p>
 </div>
 """, unsafe_allow_html=True)
