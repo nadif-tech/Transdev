@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
-import easyocr
 from PIL import Image
+import pytesseract
 import numpy as np
 import io
 import re
 from datetime import datetime
-import tempfile
 import os
 
 # Configuration de la page
@@ -20,40 +19,40 @@ st.set_page_config(
 st.title("📸 Extracteur de Numéros depuis Photos")
 st.markdown("---")
 
-# Initialisation du reader EasyOCR (avec cache pour performance)
-@st.cache_resource
-def load_ocr_reader():
-    """Charge le reader EasyOCR une seule fois"""
-    return easyocr.Reader(['fr', 'en'], gpu=False)
-
 # Fonction pour extraire les numéros du texte
 def extract_numbers(text):
     """Extrait tous les numéros trouvés dans le texte"""
+    if not text:
+        return []
     # Pattern pour trouver des numéros (entiers ou décimaux)
     pattern = r'\b\d+(?:[.,]\d+)?\b'
     numbers = re.findall(pattern, text)
     return numbers
 
 # Fonction pour traiter une image
-def process_image(image, reader):
-    """Traite une image et extrait les numéros"""
+def process_image(image):
+    """Traite une image et extrait les numéros avec Tesseract"""
     try:
-        # Convertir PIL Image en array numpy
-        img_array = np.array(image)
+        # Convertir en niveaux de gris pour meilleure reconnaissance
+        if image.mode != 'L':
+            image = image.convert('L')
+        
+        # Configuration Tesseract pour le français
+        custom_config = r'--oem 3 --psm 6 -l fra+eng'
         
         # OCR sur l'image
-        result = reader.readtext(img_array)
+        text = pytesseract.image_to_string(image, config=custom_config)
         
-        # Extraire tout le texte
-        full_text = ' '.join([text[1] for text in result])
+        # Nettoyer le texte
+        text = text.strip()
         
         # Extraire les numéros
-        numbers = extract_numbers(full_text)
+        numbers = extract_numbers(text)
         
         return {
-            'text': full_text,
+            'text': text,
             'numbers': numbers,
-            'all_numbers': ', '.join(numbers),
+            'all_numbers': ', '.join(numbers) if numbers else '',
             'count': len(numbers),
             'success': True
         }
@@ -152,10 +151,6 @@ with col2:
     st.subheader("📊 Résultats de l'extraction")
     
     if process_button and st.session_state.processed_images:
-        # Charger le reader OCR
-        with st.spinner("Chargement du modèle OCR..."):
-            reader = load_ocr_reader()
-        
         # Traiter chaque image
         st.session_state.all_results = []
         progress_bar = st.progress(0)
@@ -163,7 +158,7 @@ with col2:
         for idx, img_file in enumerate(st.session_state.processed_images):
             with st.spinner(f"Traitement de la photo {idx+1}..."):
                 image = Image.open(img_file)
-                result = process_image(image, reader)
+                result = process_image(image)
                 
                 # Ajouter les métadonnées
                 result['filename'] = img_file.name
