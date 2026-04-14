@@ -51,23 +51,7 @@ def extract_numbers_with_gemini(image, model):
         image.save(img_byte_arr, format='JPEG', quality=95)
         img_bytes = img_byte_arr.getvalue()
         
-        prompt = """
-        Analyse cette image et extrait TOUS les numeros visibles.
-        
-        INSTRUCTIONS:
-        1. Trouve TOUS les nombres dans l'image (comme 10406871, 823743, etc.)
-        2. Extrait egalement tout texte visible
-        
-        Reponds UNIQUEMENT avec un JSON valide selon ce format exact:
-        {
-            "success": true,
-            "numbers": ["10406871", "823743"],
-            "full_text": "texte complet ici",
-            "confidence": "high"
-        }
-        
-        IMPORTANT: Ne mets PAS de texte avant ou apres le JSON. Juste le JSON pur.
-        """
+        prompt = "Analyse cette image et extrait TOUS les numeros visibles. Reponds UNIQUEMENT avec un JSON valide selon ce format exact: {\"success\": true, \"numbers\": [\"10406871\", \"823743\"], \"full_text\": \"texte complet ici\", \"confidence\": \"high\"}"
         
         contents = [
             prompt,
@@ -273,5 +257,185 @@ def main():
             st.markdown("---")
             st.markdown("### Exemple de detection")
             
-            st.markdown("""
-            **Image type (comme TESTO01.jpeg):**
+            st.write("Image type (comme TESTO01.jpeg):")
+            st.code("HENGSTLER\n10406871\n823743")
+            st.write("Numeros qui seront detectes: 10406871, 823743")
+    
+    # Tab 2: Analyse
+    with tab2:
+        st.header("Analyse avec Gemini AI")
+        
+        if st.session_state.processing:
+            st.info("Traitement en cours...")
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for idx, img_file in enumerate(st.session_state.uploaded_images):
+                status_text.text(f"Analyse de {img_file.name} ({idx+1}/{len(st.session_state.uploaded_images)})")
+                
+                image = Image.open(img_file)
+                image = preprocess_image(image)
+                
+                col1, col2 = st.columns([1, 2])
+                
+                with col1:
+                    st.image(image, caption=f"Analyse: {img_file.name}", width=200)
+                
+                with col2:
+                    with st.spinner("Gemini analyse..."):
+                        result = extract_numbers_with_gemini(image, st.session_state.gemini_model)
+                        result['filename'] = img_file.name
+                        result['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
+                        if result.get('success'):
+                            st.success(f"{len(result.get('numbers', []))} numeros trouves")
+                            st.write(f"Confiance: {result.get('confidence', 'N/A')}")
+                        else:
+                            st.error(f"Erreur: {result.get('error', 'Inconnue')}")
+                        
+                        if result.get('numbers'):
+                            st.write("Numeros detectes:")
+                            for num in result['numbers']:
+                                st.code(num)
+                        
+                        st.session_state.results.append(result)
+                
+                progress_bar.progress((idx + 1) / len(st.session_state.uploaded_images))
+                time.sleep(0.5)
+            
+            status_text.text("Analyse terminee!")
+            st.session_state.processing = False
+            st.rerun()
+        
+        else:
+            if st.session_state.uploaded_images:
+                st.info("Cliquez sur 'ANALYSER' dans la barre laterale pour commencer")
+                
+                st.markdown("### Apercu des images a analyser")
+                cols = st.columns(min(3, len(st.session_state.uploaded_images)))
+                
+                for idx, img_file in enumerate(st.session_state.uploaded_images):
+                    with cols[idx % 3]:
+                        image = Image.open(img_file)
+                        st.image(image, caption=img_file.name, width=150)
+            else:
+                st.info("Chargez d'abord des images dans la barre laterale")
+    
+    # Tab 3: Resultats
+    with tab3:
+        st.header("Resultats de l'extraction")
+        
+        if st.session_state.results:
+            st.subheader("Recapitulatif")
+            
+            summary_data = []
+            all_numbers = []
+            
+            for r in st.session_state.results:
+                numbers_count = len(r.get('numbers', []))
+                summary_data.append({
+                    'Fichier': r['filename'],
+                    'Numeros': numbers_count,
+                    'Confiance': r.get('confidence', 'N/A'),
+                    'Date': r['timestamp']
+                })
+                
+                all_numbers.extend(r.get('numbers', []))
+            
+            df_summary = pd.DataFrame(summary_data)
+            st.dataframe(df_summary, use_container_width=True)
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Fichiers", len(st.session_state.results))
+            with col2:
+                st.metric("Total Numeros", len(all_numbers))
+            with col3:
+                unique_numbers = len(set(all_numbers))
+                st.metric("Numeros uniques", unique_numbers)
+            
+            st.markdown("---")
+            
+            st.subheader("Details par fichier")
+            
+            for idx, result in enumerate(st.session_state.results):
+                with st.expander(f"{result['filename']} - {len(result.get('numbers', []))} numeros"):
+                    col1, col2 = st.columns([1, 2])
+                    
+                    with col1:
+                        img_file = st.session_state.uploaded_images[idx] if idx < len(st.session_state.uploaded_images) else None
+                        if img_file:
+                            image = Image.open(img_file)
+                            st.image(image, width=200)
+                    
+                    with col2:
+                        st.write(f"Confiance: {result.get('confidence', 'N/A')}")
+                        st.write(f"Date d'analyse: {result['timestamp']}")
+                        
+                        if result.get('numbers'):
+                            st.write("Numeros detectes:")
+                            for num in result['numbers']:
+                                st.code(num)
+                        else:
+                            st.warning("Aucun numero detecte")
+                        
+                        if result.get('full_text'):
+                            st.text_area(
+                                "Texte complet extrait",
+                                result['full_text'][:500],
+                                height=100,
+                                key=f"text_{idx}"
+                            )
+            
+            st.markdown("---")
+            
+            st.subheader("Export des resultats")
+            
+            if st.button("Telecharger CSV"):
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                csv_data = create_csv_export(st.session_state.results)
+                
+                st.download_button(
+                    label="Cliquer pour telecharger",
+                    data=csv_data,
+                    file_name=f"numeros_{timestamp}.csv",
+                    mime="text/csv"
+                )
+            
+            if all_numbers:
+                st.markdown("---")
+                st.subheader("Copier tous les numeros")
+                
+                numbers_text = '\n'.join(all_numbers)
+                st.text_area(
+                    "Tous les numeros (Ctrl+C pour copier)",
+                    numbers_text,
+                    height=150
+                )
+        
+        else:
+            st.info("Aucun resultat disponible. Lancez une analyse dans l'onglet 'Analyse'.")
+            
+            st.markdown("---")
+            st.markdown("### Exemple de resultat attendu")
+            
+            example_data = pd.DataFrame([
+                {"Fichier": "TESTO01.jpeg", "Numero": "10406871", "Confiance": "high"},
+                {"Fichier": "TESTO01.jpeg", "Numero": "823743", "Confiance": "high"}
+            ])
+            
+            st.dataframe(example_data, use_container_width=True)
+
+    # Footer
+    st.markdown("---")
+    st.markdown("""
+    <div style='background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%); padding: 20px; border-radius: 10px; color: white; text-align: center;'>
+        <h3 style='color: white;'>Extracteur de Numeros avec Google Gemini AI</h3>
+        <p>Version 2.0 | API Gemini integree | 1500 requetes/jour gratuites</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
